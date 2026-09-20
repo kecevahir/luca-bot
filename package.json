@@ -1,0 +1,25 @@
+{
+  "name": "luca-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Luca Mali Müşavir Paketi web arayüzü için otomasyon botu",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "login-test": "node src/tasks/login-test.js",
+    "codegen": "playwright codegen"
+  },
+  "keywords": [
+    "luca",
+    "automation",
+    "playwright",
+    "smmm"
+  ],
+  "author": "Kubilay Erhan Cevahir",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "^1.47.0"
+  }
+}
