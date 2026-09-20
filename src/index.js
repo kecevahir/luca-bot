@@ -2,15 +2,13 @@
 /**
  * luca-bot giriş noktası — görevleri listeler / çalıştırır / zamanlar.
  *
- * Kullanım:
- *   npm start                  # görev listesi
- *   npm start -- login-test    # tek görev
- *   npm start -- login-test --once
- *
- * Zamanlama .env içindeki LUCA_SCHEDULE ile veya --schedule ile verilir.
+ * Güvenli test:
+ *   npm start -- login-test --watch
+ *   npm start -- <görev> --watch --step
+ *   npm start -- <görev> --dry-run
  */
 
-import { config, getCredentials } from './config.js';
+import { config, getCredentials, applyRuntimeFlags } from './config.js';
 import { launchBrowser, ensureLoggedIn, captureErrorScreenshot } from './browser.js';
 import { listTasks, loadTask } from './runner.js';
 import { runScheduled } from './scheduler.js';
@@ -26,6 +24,9 @@ function parseArgs(argv) {
     if (a === '--once') flags.add('once');
     else if (a === '--list' || a === '-l') flags.add('list');
     else if (a === '--help' || a === '-h') flags.add('help');
+    else if (a === '--watch' || a === '-w') flags.add('watch');
+    else if (a === '--step') flags.add('step');
+    else if (a === '--dry-run') flags.add('dry-run');
     else if (a === '--schedule') {
       schedule = args[++i] ?? '';
     } else if (a.startsWith('--schedule=')) {
@@ -44,16 +45,26 @@ function printHelp(tasks) {
   console.log(`luca-bot — Luca Mali Müşavir otomasyon botu
 
 Kullanım:
-  npm start -- <görev> [--once] [--schedule "every:3600"|cron]
+  npm start -- <görev> [seçenekler]
   npm start -- --list
+
+Güvenli test seçenekleri:
+  --watch      Tarayıcıyı görünür aç, hareketleri yavaşlat (izle)
+  --step       Her kontrol noktasında Enter bekle
+  --dry-run    Kritik tıklamaları UYGULAMA (sadece simüle et)
+  --once       Zamanlayıcıyı yok say, tek sefer çalıştır
+
+Diğer:
+  --schedule "every:3600"|cron
 
 Görevler:
 ${tasks.map((t) => `  - ${t}`).join('\n') || '  (henüz yok)'}
 
-Örnekler:
-  npm start -- login-test
-  npm start -- login-test --schedule "every:3600"
-  npm start -- login-test --schedule "0 9 * * 1-5"
+Önerilen test sırası:
+  1) npm start -- login-test --watch
+  2) npm start -- <görev> --watch --step --dry-run
+  3) npm start -- <görev> --watch --step
+  4) (emin olduktan sonra) npm start -- <görev>
 `);
 }
 
@@ -85,15 +96,28 @@ async function main() {
 
   const { taskName, flags, schedule } = parsed;
 
+  applyRuntimeFlags({
+    watch: flags.has('watch'),
+    step: flags.has('step'),
+    dryRun: flags.has('dry-run'),
+  });
+
   if (flags.has('help') || flags.has('list') || !taskName) {
     printHelp(tasks);
     return;
   }
 
   const taskFn = await loadTask(taskName);
-  // Tarayıcı açmadan önce kimlik bilgilerini doğrula
   getCredentials();
-  const effectiveSchedule = flags.has('once') ? '' : schedule;
+
+  // İzleme / dry-run / step varken zamanlayıcıyı kapat (kazara döngü olmasın)
+  const safetyMode = flags.has('watch') || flags.has('step') || flags.has('dry-run');
+  const effectiveSchedule =
+    flags.has('once') || safetyMode ? '' : schedule;
+
+  if (safetyMode && schedule) {
+    console.log('Not: --watch/--step/--dry-run iken zamanlayıcı yok sayılır.');
+  }
 
   try {
     await runScheduled(effectiveSchedule, async () => {

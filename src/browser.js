@@ -10,9 +10,26 @@ export const ARTIFACTS_DIR = path.join(__dirname, '..', 'artifacts');
 
 /**
  * Tarayıcıyı açar. storage-state.json varsa önceki oturumu geri yükler.
+ * --watch / LUCA_SLOW_MO ile hareketler yavaşlatılır (gözle takip için).
  */
 export async function launchBrowser() {
-  const browser = await chromium.launch({ headless: config.headless });
+  const slowMo = config.watch
+    ? Math.max(config.slowMo || 0, 250)
+    : config.slowMo || 0;
+
+  if (!config.headless) {
+    console.log(
+      `Tarayıcı görünür açılıyor` +
+        (slowMo ? ` (slowMo=${slowMo}ms)` : '') +
+        (config.dryRun ? ' [DRY-RUN]' : '') +
+        (config.step ? ' [STEP]' : '')
+    );
+  }
+
+  const browser = await chromium.launch({
+    headless: config.headless,
+    slowMo,
+  });
   const contextOptions = { viewport: { width: 1400, height: 900 } };
 
   let context;

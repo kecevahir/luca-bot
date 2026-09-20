@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "login-test": "node src/tasks/login-test.js",
+    "watch:login": "node src/index.js login-test --watch",
     "codegen": "playwright codegen",
     "codegen:login": "playwright codegen https://agiris.luca.com.tr/LUCASSO/giris.erp"
   },
