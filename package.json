@@ -1,6 +1,6 @@
 {
   "name": "luca-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Luca Mali Müşavir Paketi web arayüzü için otomasyon botu",
   "type": "module",
@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node src/index.js",
     "login-test": "node src/tasks/login-test.js",
-    "codegen": "playwright codegen"
+    "watch:login": "node src/index.js login-test --watch",
+    "codegen": "playwright codegen",
+    "codegen:login": "playwright codegen https://agiris.luca.com.tr/LUCASSO/giris.erp"
   },
   "keywords": [
     "luca",
@@ -21,5 +23,8 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "playwright": "^1.47.0"
+  },
+  "optionalDependencies": {
+    "otplib": "^12.0.1"
   }
 }

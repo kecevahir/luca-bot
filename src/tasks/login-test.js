@@ -1,22 +1,38 @@
-import { launchBrowser, login, saveSession } from '../browser.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { launchBrowser, ensureLoggedIn, captureErrorScreenshot } from '../browser.js';
+import { checkpoint } from '../safe.js';
 
 /**
- * Giriş akışını test etmek için kullanılan basit görev.
- * Çalıştır: npm run login-test
+ * Giriş akışını test eder ve oturumu kaydeder.
+ * Güvenli izleme: npm start -- login-test --watch
  */
-async function main() {
-  const { browser, context, page } = await launchBrowser();
+export async function run(ctx = {}) {
+  if (ctx.page && ctx.context) {
+    await checkpoint(ctx.page, 'Giriş tamam — oturum hazır (login-test)');
+    console.log('Oturum hazır (login-test). Luca’da iş kaydı yapılmadı.');
+    return;
+  }
 
+  const { browser, context, page } = await launchBrowser();
   try {
-    await login(page);
-    await saveSession(context);
-    console.log('Giriş başarılı, oturum kaydedildi.');
+    await ensureLoggedIn(page, context);
+    await checkpoint(page, 'Giriş tamam — tarayıcıyı kontrol et, sonra Enter');
+    console.log('Oturum hazır (login-test). Luca’da iş kaydı yapılmadı.');
   } catch (err) {
+    const shot = await captureErrorScreenshot(page, 'login-test');
     console.error('Giriş başarısız:', err.message);
+    if (shot) console.error('Ekran görüntüsü:', shot);
     process.exitCode = 1;
   } finally {
     await browser.close();
   }
 }
 
-main();
+const isDirect =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirect) {
+  run();
+}
