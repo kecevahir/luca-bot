@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, getCredentials } from './config.js';
+import { solveCaptchaIfPresent, isCaptchaPage } from './captcha.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const STORAGE_STATE_PATH = path.join(__dirname, '..', 'storage-state.json');
@@ -66,9 +67,8 @@ export async function isLoginPage(page) {
   const url = page.url();
   if (/giris\.erp|login/i.test(url)) return true;
 
-  const memberField = page
-    .getByLabel(/üye\s*numaras[ıi]/i)
-    .or(page.locator('input[name*="uye" i], input[id*="uye" i]').first());
+  // Gerçek form alanları: #musteriNo, #kullaniciAdi, #parola
+  const memberField = page.locator('#musteriNo, input[name="musteriNo"]').first();
 
   try {
     return await memberField.isVisible({ timeout: 1500 });
@@ -79,44 +79,56 @@ export async function isLoginPage(page) {
 
 /**
  * Luca Mali Müşavir ortak giriş sayfasına giriş yapar.
- * Alanlar: Üye Numarası, Kullanıcı Adı, Parola (+ isteğe bağlı 2FA).
+ * Akış: (opsiyonel ön CAPTCHA) → form → GİRİŞ → (CAPTCHA) → (2FA)
  */
 export async function login(page) {
   const creds = getCredentials();
-  await page.goto(config.lucaUrl, { waitUntil: 'domcontentloaded' });
+  await page.goto(config.lucaUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForLoadState('networkidle').catch(() => {});
+  await page.waitForTimeout(800);
 
-  const member = page
-    .getByLabel(/üye\s*numaras[ıi]/i)
-    .or(page.getByPlaceholder(/üye\s*numaras[ıi]/i))
-    .or(page.locator('input[name*="uye" i], input[id*="uye" i]').first());
+  // Bazen (rate-limit / VPN IP) önce CAPTCHA gelir
+  if (await isCaptchaPage(page)) {
+    console.log('Giriş formu öncesi CAPTCHA var — önce çözülüyor...');
+    await solveCaptchaIfPresent(page);
+    await page.waitForTimeout(1000);
+  }
 
-  const username = page
-    .getByLabel(/kullan[ıi]c[ıi]\s*ad[ıi]/i)
-    .or(page.getByPlaceholder(/kullan[ıi]c[ıi]\s*ad[ıi]/i))
-    .or(
-      page
-        .locator(
-          'input[name*="kullanici" i], input[id*="kullanici" i], input[name*="user" i]'
-        )
-        .first()
-    );
+  // CAPTCHA sonrası hâlâ form yoksa "Luca Giriş Ekranı" linkine git
+  let member = page.locator('#musteriNo, input[name="musteriNo"]').first();
+  if (!(await member.isVisible({ timeout: 3000 }).catch(() => false))) {
+    const back = page.getByText(/luca giriş ekranı/i).first();
+    if (await back.isVisible().catch(() => false)) {
+      await back.click();
+      await page.waitForTimeout(1500);
+    }
+    // Yeniden yükle
+    if (!(await member.isVisible({ timeout: 2000 }).catch(() => false))) {
+      await page.goto(config.lucaUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(1000);
+      if (await isCaptchaPage(page)) {
+        await solveCaptchaIfPresent(page);
+      }
+    }
+  }
 
-  const password = page
-    .getByLabel(/parola|şifre|sifre/i)
-    .or(page.getByPlaceholder(/parola|şifre|sifre/i))
-    .or(page.locator('input[type="password"]').first());
+  member = page.locator('#musteriNo, input[name="musteriNo"]').first();
+  const username = page.locator('#kullaniciAdi, input[name="kullaniciAdi"]').first();
+  const password = page.locator('#parola, input[name="parola"]').first();
 
-  await member.waitFor({ state: 'visible', timeout: 30000 });
+  await member.waitFor({ state: 'visible', timeout: 45000 });
+  console.log('Giriş formu görünür — bilgiler dolduruluyor...');
   await member.fill(creds.memberNo);
   await username.fill(creds.username);
   await password.fill(creds.password);
 
-  const submit = page
-    .getByRole('button', { name: /giriş|giris|tamam|login/i })
-    .or(page.locator('input[type="submit"], button[type="submit"]').first());
-
+  // type="button" + onClick="girisbtn();" — klasik submit değil
+  const submit = page.locator('input[type="button"][value="GİRİŞ"], input[type="button"][value="Giris"]').first();
   await submit.click();
+
+  // CAPTCHA (sık çıkar) — otonom: 2captcha / OCR / insan
+  await page.waitForTimeout(1200);
+  await solveCaptchaIfPresent(page);
 
   // İsteğe bağlı 2FA
   const totp = await resolveTotpCode();
@@ -136,20 +148,32 @@ export async function login(page) {
     }
   }
 
-  // Giriş formunun kaybolmasını bekle
+  // CAPTCHA sonrası tekrar çıkabilir / hata diyaloğu
+  await page.waitForTimeout(800);
+  if (await isCaptchaPage(page)) {
+    await solveCaptchaIfPresent(page);
+  }
+
+  // Giriş formunun / captcha'nın kaybolmasını bekle
   await page
     .waitForFunction(
-      () => !/giris\.erp/i.test(location.href),
+      () => {
+        const t = document.body?.innerText || '';
+        const onGiris = /giris\.erp/i.test(location.href);
+        const captcha = /resimdeki karakterleri|güvenlik kodu/i.test(t);
+        const loginForm = !!document.querySelector('#musteriNo');
+        return !(onGiris && (captcha || loginForm));
+      },
       null,
-      { timeout: 30000 }
+      { timeout: 90000 }
     )
     .catch(() => {});
 
-  if (await isLoginPage(page)) {
+  if ((await isLoginPage(page)) || (await isCaptchaPage(page))) {
     throw new Error(
-      'Giriş başarısız görünüyor — hâlâ giriş sayfasındayız. ' +
-        'Üye no / kullanıcı / parola doğru mu? 2FA gerekiyorsa LUCA_TOTP_SECRET ayarlayın. ' +
-        'Luca sanal klavye zorunlu kılıyorsa codegen ile adımları kaydedip login() güncelleyin.'
+      'Giriş başarısız görünüyor — hâlâ giriş/CAPTCHA sayfasındayız. ' +
+        'Üye no / kullanıcı / parola doğru mu? CAPTCHA için LUCA_CAPTCHA_API_KEY ' +
+        'veya --watch ile elle çözüm gerekir.'
     );
   }
 }
