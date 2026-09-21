@@ -79,18 +79,45 @@ export async function isLoginPage(page) {
 
 /**
  * Luca Mali Müşavir ortak giriş sayfasına giriş yapar.
- * Alanlar: #musteriNo, #kullaniciAdi, #parola → GİRİŞ (girisbtn).
+ * Akış: (opsiyonel ön CAPTCHA) → form → GİRİŞ → (CAPTCHA) → (2FA)
  */
 export async function login(page) {
   const creds = getCredentials();
   await page.goto(config.lucaUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForLoadState('networkidle').catch(() => {});
+  await page.waitForTimeout(800);
 
-  const member = page.locator('#musteriNo, input[name="musteriNo"]').first();
+  // Bazen (rate-limit / VPN IP) önce CAPTCHA gelir
+  if (await isCaptchaPage(page)) {
+    console.log('Giriş formu öncesi CAPTCHA var — önce çözülüyor...');
+    await solveCaptchaIfPresent(page);
+    await page.waitForTimeout(1000);
+  }
+
+  // CAPTCHA sonrası hâlâ form yoksa "Luca Giriş Ekranı" linkine git
+  let member = page.locator('#musteriNo, input[name="musteriNo"]').first();
+  if (!(await member.isVisible({ timeout: 3000 }).catch(() => false))) {
+    const back = page.getByText(/luca giriş ekranı/i).first();
+    if (await back.isVisible().catch(() => false)) {
+      await back.click();
+      await page.waitForTimeout(1500);
+    }
+    // Yeniden yükle
+    if (!(await member.isVisible({ timeout: 2000 }).catch(() => false))) {
+      await page.goto(config.lucaUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(1000);
+      if (await isCaptchaPage(page)) {
+        await solveCaptchaIfPresent(page);
+      }
+    }
+  }
+
+  member = page.locator('#musteriNo, input[name="musteriNo"]').first();
   const username = page.locator('#kullaniciAdi, input[name="kullaniciAdi"]').first();
   const password = page.locator('#parola, input[name="parola"]').first();
 
-  await member.waitFor({ state: 'visible', timeout: 30000 });
+  await member.waitFor({ state: 'visible', timeout: 45000 });
+  console.log('Giriş formu görünür — bilgiler dolduruluyor...');
   await member.fill(creds.memberNo);
   await username.fill(creds.username);
   await password.fill(creds.password);
@@ -138,7 +165,7 @@ export async function login(page) {
         return !(onGiris && (captcha || loginForm));
       },
       null,
-      { timeout: 45000 }
+      { timeout: 90000 }
     )
     .catch(() => {});
 

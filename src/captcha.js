@@ -19,27 +19,63 @@ const ARTIFACTS_DIR = path.join(__dirname, '..', 'artifacts');
  */
 
 export async function isCaptchaPage(page) {
+  // Sadece metin — login formundaki textbox'a bakmak yanlış pozitif verir
   const text = await page.locator('body').innerText().catch(() => '');
-  if (/resimdeki karakterleri|güvenlik kodu|captcha/i.test(text)) return true;
-
-  const field = captchaInput(page);
-  return field.isVisible({ timeout: 800 }).catch(() => false);
+  return /resimdeki karakterleri\s*giriniz|güvenlik kodu/i.test(text);
 }
 
 function captchaInput(page) {
+  // Önce adlandırılmış alanlar; yoksa "Tamam" butonunun üstündeki tek text input
   return page
     .locator(
-      'input[name*="captcha" i], input[id*="captcha" i], input[name*="guvenlik" i], input[id*="guvenlik" i]'
+      'input[name*="captcha" i], input[id*="captcha" i], input[name*="guvenlik" i], input[id*="guvenlik" i], input[name*="kod" i], input[id*="kod" i]'
     )
-    .or(page.getByRole('textbox').nth(0))
+    .or(
+      page
+        .locator('input[type="text"]:visible')
+        .filter({ hasNot: page.locator('#musteriNo, #kullaniciAdi, [name="musteriNo"], [name="kullaniciAdi"]') })
+        .first()
+    )
     .first();
 }
 
 function captchaImage(page) {
-  return page
-    .locator('img[src*="captcha" i], img[id*="captcha" i], img[src*="Guvenlik" i], img[src*="guvenlik" i]')
-    .or(page.locator('img').filter({ hasNot: page.locator('[src*="logo" i]') }).first())
-    .first();
+  // Önce açık adaylar
+  const named = page.locator(
+    'img[src*="captcha" i], img[id*="captcha" i], img[src*="Guvenlik" i], img[src*="guvenlik" i], img[src*="kod" i]'
+  );
+  return named.first();
+}
+
+async function captureCaptchaImage(page, destPath) {
+  // İsimli img
+  const named = captchaImage(page);
+  if (await named.isVisible().catch(() => false)) {
+    await named.screenshot({ path: destPath });
+    return destPath;
+  }
+
+  // Metnin üstündeki / yakındaki img — en geniş küçük-orta boy görsel
+  const best = await page.evaluate(() => {
+    const imgs = [...document.images]
+      .map((img, idx) => ({
+        idx,
+        w: img.naturalWidth || img.width,
+        h: img.naturalHeight || img.height,
+        src: img.src,
+      }))
+      .filter((i) => i.w >= 80 && i.w <= 500 && i.h >= 30 && i.h <= 200);
+    imgs.sort((a, b) => b.w * b.h - a.w * a.h);
+    return imgs[0]?.idx ?? -1;
+  });
+
+  if (best >= 0) {
+    await page.locator('img').nth(best).screenshot({ path: destPath });
+    return destPath;
+  }
+
+  await page.screenshot({ path: destPath, fullPage: true });
+  return destPath;
 }
 
 function captchaSubmit(page) {
@@ -51,58 +87,127 @@ function captchaSubmit(page) {
 
 /**
  * CAPTCHA varsa çözer ve Tamam'a basar. Yoksa no-op.
+ * Luca CAPTCHA'ları genelde küçük harf; 2captcha bazen karıştırır → toLowerCase.
+ * Yanlış cevapta yenile + tekrar dene (max 5).
  */
 export async function solveCaptchaIfPresent(page) {
   if (!(await isCaptchaPage(page))) return false;
 
   console.log('CAPTCHA algılandı — çözüm deneniyor...');
   await fs.mkdir(ARTIFACTS_DIR, { recursive: true });
-  const shot = path.join(
-    ARTIFACTS_DIR,
-    `captcha-${new Date().toISOString().replace(/[:.]/g, '-')}.png`
+
+  const maxAttempts = 5;
+  let lastCode = '';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await dismissErrorDialog(page);
+
+    if (!(await isCaptchaPage(page))) {
+      console.log('CAPTCHA ekranı kapandı.');
+      return true;
+    }
+
+    if (attempt > 1) {
+      await refreshCaptchaImage(page);
+      await page.waitForTimeout(800);
+    }
+
+    const shot = path.join(
+      ARTIFACTS_DIR,
+      `captcha-${Date.now()}-try${attempt}.png`
+    );
+    await captureCaptchaImage(page, shot).catch(() =>
+      page.screenshot({ path: shot, fullPage: true })
+    );
+    console.log(`CAPTCHA görseli (deneme ${attempt}/${maxAttempts}):`, shot);
+
+    let code =
+      (attempt === 1 && config.captchaCode) ||
+      (await solveVia2Captcha(shot)) ||
+      (await solveViaOcr(shot)) ||
+      '';
+
+    // Luca görselleri küçük harf ağırlıklı
+    code = String(code || '')
+      .trim()
+      .replace(/\s+/g, '')
+      .toLowerCase();
+    lastCode = code;
+
+    if (!code) {
+      console.log('Bu denemede kod alınamadı, yenileniyor...');
+      continue;
+    }
+
+    console.log(`CAPTCHA kodu denenecek: ${code}`);
+    const field = captchaInput(page);
+    await field.waitFor({ state: 'visible', timeout: 10000 });
+    await field.click({ clickCount: 3 }).catch(() => {});
+    await field.fill('');
+    await field.fill(code);
+
+    const submit = captchaSubmit(page);
+    await submit.click({ noWaitAfter: true });
+    await page.waitForLoadState('domcontentloaded', { timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+    await dismissErrorDialog(page);
+
+    if (!(await isCaptchaPage(page))) {
+      console.log('CAPTCHA aşıldı.');
+      return true;
+    }
+
+    console.log(`CAPTCHA reddedildi (${code}), tekrar denenecek...`);
+  }
+
+  // Son çare insan
+  if (config.watch || config.step || !config.headless) {
+    const human = await askHuman(page, path.join(ARTIFACTS_DIR, 'captcha-human.png'));
+    if (human) {
+      const code = String(human).trim().replace(/\s+/g, '').toLowerCase();
+      const field = captchaInput(page);
+      await field.fill(code);
+      await captchaSubmit(page).click({ noWaitAfter: true });
+      await page.waitForTimeout(1500);
+      if (!(await isCaptchaPage(page))) {
+        console.log('CAPTCHA aşıldı (insan).');
+        return true;
+      }
+    }
+  }
+
+  throw new Error(
+    `CAPTCHA ${maxAttempts} denemede aşılamadı (son: "${lastCode}"). ` +
+      '2captcha bakiyesi / görsel kalitesi kontrol edin.'
   );
+}
 
-  const img = captchaImage(page);
-  let imagePath = shot;
-  if (await img.isVisible().catch(() => false)) {
-    await img.screenshot({ path: shot }).catch(() => page.screenshot({ path: shot }));
-  } else {
-    await page.screenshot({ path: shot, fullPage: true });
+async function dismissErrorDialog(page) {
+  // sweetAlert "HATA" / "Lütfen resmi yenileyin" → TAMAM
+  const btn = page.locator(
+    'button.confirm, .sweet-alert button.confirm, button:has-text("TAMAM"), button:has-text("Tamam")'
+  ).first();
+  if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
+    await btn.click({ noWaitAfter: true }).catch(() => {});
+    await page.waitForTimeout(400);
   }
-  console.log('CAPTCHA görseli:', shot);
+}
 
-  let code =
-    config.captchaCode ||
-    (await solveVia2Captcha(imagePath)) ||
-    (await solveViaOcr(imagePath)) ||
-    (await askHuman(page, shot));
-
-  code = String(code || '')
-    .trim()
-    .replace(/\s+/g, '');
-  if (!code) {
-    throw new Error(
-      'CAPTCHA çözülemedi. LUCA_CAPTCHA_API_KEY (2captcha) ekleyin veya --watch ile elle girin.'
-    );
+async function refreshCaptchaImage(page) {
+  // Yenile ikonu — title/alt/class veya captcha img yanındaki clickable
+  const candidates = [
+    page.locator('img[onclick*="yenile" i], a[onclick*="yenile" i], img[src*="refresh" i]'),
+    page.locator('[title*="Yenile" i], [alt*="Yenile" i]'),
+    page.getByRole('link', { name: /yenile/i }),
+  ];
+  for (const loc of candidates) {
+    const el = loc.first();
+    if (await el.isVisible({ timeout: 300 }).catch(() => false)) {
+      await el.click({ noWaitAfter: true }).catch(() => {});
+      return;
+    }
   }
-
-  const field = captchaInput(page);
-  await field.waitFor({ state: 'visible', timeout: 10000 });
-  await field.fill('');
-  await field.type(code, { delay: 50 });
-
-  const submit = captchaSubmit(page);
-  await submit.click();
-  await page.waitForTimeout(1500);
-
-  if (await isCaptchaPage(page)) {
-    throw new Error(
-      `CAPTCHA kabul edilmedi (denenen: "${code}"). Yenileyip tekrar deneyin veya 2captcha kullanın.`
-    );
-  }
-
-  console.log('CAPTCHA aşıldı.');
-  return true;
+  // Fallback: captcha img'ye tıklamak bazen yeniler; yoksa sayfa reload etme
 }
 
 async function askHuman(page, shotPath) {
