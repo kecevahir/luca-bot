@@ -46,6 +46,10 @@ export const config = {
   ),
   totpCode: optional('LUCA_TOTP_CODE'),
   totpSecret: optional('LUCA_TOTP_SECRET'),
+  // CAPTCHA: 2captcha API key → otonom; yoksa insan / OCR
+  captchaApiKey: optional('LUCA_CAPTCHA_API_KEY'),
+  captchaCode: optional('LUCA_CAPTCHA_CODE'),
+  captchaOcr: bool('LUCA_CAPTCHA_OCR', true),
   // Test aşamasında false önerilir; üretim/cron için true
   headless: bool('LUCA_HEADLESS', false),
   slowMo: Number(process.env.LUCA_SLOW_MO ?? '0') || 0,

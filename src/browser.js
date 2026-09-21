@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, getCredentials } from './config.js';
+import { solveCaptchaIfPresent, isCaptchaPage } from './captcha.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const STORAGE_STATE_PATH = path.join(__dirname, '..', 'storage-state.json');
@@ -98,6 +99,10 @@ export async function login(page) {
   const submit = page.locator('input[type="button"][value="GİRİŞ"], input[type="button"][value="Giris"]').first();
   await submit.click();
 
+  // CAPTCHA (sık çıkar) — otonom: 2captcha / OCR / insan
+  await page.waitForTimeout(1200);
+  await solveCaptchaIfPresent(page);
+
   // İsteğe bağlı 2FA
   const totp = await resolveTotpCode();
   if (totp) {
@@ -116,20 +121,32 @@ export async function login(page) {
     }
   }
 
-  // Giriş formunun kaybolmasını bekle
+  // CAPTCHA sonrası tekrar çıkabilir / hata diyaloğu
+  await page.waitForTimeout(800);
+  if (await isCaptchaPage(page)) {
+    await solveCaptchaIfPresent(page);
+  }
+
+  // Giriş formunun / captcha'nın kaybolmasını bekle
   await page
     .waitForFunction(
-      () => !/giris\.erp/i.test(location.href),
+      () => {
+        const t = document.body?.innerText || '';
+        const onGiris = /giris\.erp/i.test(location.href);
+        const captcha = /resimdeki karakterleri|güvenlik kodu/i.test(t);
+        const loginForm = !!document.querySelector('#musteriNo');
+        return !(onGiris && (captcha || loginForm));
+      },
       null,
-      { timeout: 30000 }
+      { timeout: 45000 }
     )
     .catch(() => {});
 
-  if (await isLoginPage(page)) {
+  if ((await isLoginPage(page)) || (await isCaptchaPage(page))) {
     throw new Error(
-      'Giriş başarısız görünüyor — hâlâ giriş sayfasındayız. ' +
-        'Üye no / kullanıcı / parola doğru mu? 2FA gerekiyorsa LUCA_TOTP_SECRET ayarlayın. ' +
-        'Luca sanal klavye zorunlu kılıyorsa codegen ile adımları kaydedip login() güncelleyin.'
+      'Giriş başarısız görünüyor — hâlâ giriş/CAPTCHA sayfasındayız. ' +
+        'Üye no / kullanıcı / parola doğru mu? CAPTCHA için LUCA_CAPTCHA_API_KEY ' +
+        'veya --watch ile elle çözüm gerekir.'
     );
   }
 }
