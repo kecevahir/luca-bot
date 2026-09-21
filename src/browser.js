@@ -66,9 +66,8 @@ export async function isLoginPage(page) {
   const url = page.url();
   if (/giris\.erp|login/i.test(url)) return true;
 
-  const memberField = page
-    .getByLabel(/üye\s*numaras[ıi]/i)
-    .or(page.locator('input[name*="uye" i], input[id*="uye" i]').first());
+  // Gerçek form alanları: #musteriNo, #kullaniciAdi, #parola
+  const memberField = page.locator('#musteriNo, input[name="musteriNo"]').first();
 
   try {
     return await memberField.isVisible({ timeout: 1500 });
@@ -79,43 +78,24 @@ export async function isLoginPage(page) {
 
 /**
  * Luca Mali Müşavir ortak giriş sayfasına giriş yapar.
- * Alanlar: Üye Numarası, Kullanıcı Adı, Parola (+ isteğe bağlı 2FA).
+ * Alanlar: #musteriNo, #kullaniciAdi, #parola → GİRİŞ (girisbtn).
  */
 export async function login(page) {
   const creds = getCredentials();
-  await page.goto(config.lucaUrl, { waitUntil: 'domcontentloaded' });
+  await page.goto(config.lucaUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForLoadState('networkidle').catch(() => {});
 
-  const member = page
-    .getByLabel(/üye\s*numaras[ıi]/i)
-    .or(page.getByPlaceholder(/üye\s*numaras[ıi]/i))
-    .or(page.locator('input[name*="uye" i], input[id*="uye" i]').first());
-
-  const username = page
-    .getByLabel(/kullan[ıi]c[ıi]\s*ad[ıi]/i)
-    .or(page.getByPlaceholder(/kullan[ıi]c[ıi]\s*ad[ıi]/i))
-    .or(
-      page
-        .locator(
-          'input[name*="kullanici" i], input[id*="kullanici" i], input[name*="user" i]'
-        )
-        .first()
-    );
-
-  const password = page
-    .getByLabel(/parola|şifre|sifre/i)
-    .or(page.getByPlaceholder(/parola|şifre|sifre/i))
-    .or(page.locator('input[type="password"]').first());
+  const member = page.locator('#musteriNo, input[name="musteriNo"]').first();
+  const username = page.locator('#kullaniciAdi, input[name="kullaniciAdi"]').first();
+  const password = page.locator('#parola, input[name="parola"]').first();
 
   await member.waitFor({ state: 'visible', timeout: 30000 });
   await member.fill(creds.memberNo);
   await username.fill(creds.username);
   await password.fill(creds.password);
 
-  const submit = page
-    .getByRole('button', { name: /giriş|giris|tamam|login/i })
-    .or(page.locator('input[type="submit"], button[type="submit"]').first());
-
+  // type="button" + onClick="girisbtn();" — klasik submit değil
+  const submit = page.locator('input[type="button"][value="GİRİŞ"], input[type="button"][value="Giris"]').first();
   await submit.click();
 
   // İsteğe bağlı 2FA
